@@ -2,6 +2,7 @@ import tqdm
 import datetime
 import pandas as pd
 import numpy as np
+from collections import defaultdict
 from Rec.Configurations import DEBUG_MODE
 
 
@@ -15,7 +16,7 @@ def mount_dataset(dataset_file_path='data/u.data'):
     """
     load dataset from disk.
 
-    By default we ues movie-lens 10k dataset,
+    By default we use movie-lens 10k dataset,
     you have to rewrite this function if you want to switch to another dataset.
 
     :return: list of rating tuples: (uid, iid, ratings, timestamp)
@@ -55,10 +56,25 @@ def data_pre_process(data):
     processed['iid'] = processed['iid'].astype(dtype=np.int32)
     processed['ratings'] = processed['ratings'].astype(dtype=np.float32)
     processed['timestamp'] = processed['timestamp'].astype(dtype=np.int32)
+    processed = processed.sort_values(by=['timestamp'])
 
-    debug('loaded data is processed.')
+    debug('Now system is dealing with id mapping')
+    distinct_user_ids = processed['uid'].unique()
+    distinct_item_ids = processed['iid'].unique()
+    # mapping user id and item id into continuous vector space
+    user_mapping = {uid: pos for pos, uid in enumerate(distinct_user_ids)}
+    item_mapping = {iid: pos for pos, iid in enumerate(distinct_item_ids)}
 
-    return processed
+    n_items, n_users = len(item_mapping), len(user_mapping)
+    processed['uid'] = processed['uid'].apply(lambda x: user_mapping[x])
+    processed['iid'] = processed['iid'].apply(lambda x: item_mapping[x])
+
+    debug('Now system is trying make sequential data.')
+    sequential_dict = defaultdict(list)
+    for idx, row in tqdm.tqdm(processed.iterrows(), total=len(processed)):
+        sequential_dict[int(row.uid)].append(int(row.iid))
+
+    return sequential_dict.items(), n_items, n_users
 
 
 class Training_Data_Batcher():
@@ -66,7 +82,7 @@ class Training_Data_Batcher():
     Training data batcher
     """
     def __init__(self, dataframe, batch_size=128, reshuffle=True):
-        if isinstance(dataframe, pd.DataFrame):
+        if isinstance(dataframe, pd.DataFrame) or isinstance(dataframe, pd.Series):
             if reshuffle:
                 self.data = dataframe.sample(n=len(dataframe))
             else:
@@ -102,6 +118,8 @@ class Training_Data_Batcher():
 class Training_Helper():
     """
     Tensorflow Model Training Delegate
+
+    That is something like keras.callback
 
     Some functions are still not implement yet.
     """
