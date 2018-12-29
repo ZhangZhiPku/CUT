@@ -12,28 +12,52 @@ def debug(info):
         print(time_for_now + '\t' + info)
 
 
-def mount_dataset(dataset_file_path='data/u.data'):
-    """
-    load dataset from disk.
-
-    By default we use movie-lens 10k dataset,
-    you have to rewrite this function if you want to switch to another dataset.
-
-    :return: list of rating tuples: (uid, iid, ratings, timestamp)
-    """
-
+def mount_dataset(user_trajactory_file_path='data/UserRecords.csv',
+                  user_attribute_file_path='data/UserAttributes.csv'):
     import os
-    if not os.path.exists(dataset_file_path):
+    if not os.path.exists(user_trajactory_file_path) or not os.path.exists(user_attribute_file_path):
         raise FileNotFoundError(
-            'Data is not found, please check target file.\n {0}'.format(dataset_file_path))
-
+            'Data is not found, please check target file.\n {0} and {1}'.format(
+                user_trajactory_file_path, user_trajactory_file_path))
     debug('Now system is trying load dataset from file.')
 
     try:
-        with open(dataset_file_path, 'r', encoding='utf-8', errors='ignore') as file:
-            rating_tuples = [tuple(line.split('\t')) for line in tqdm.tqdm(file)]
-            debug('Data set successfully loaded, with data length {0}'.format(len(rating_tuples)))
-            return rating_tuples
+        user_trajactory_df = pd.read_csv(filepath_or_buffer=user_trajactory_file_path,
+                                         sep=',', encoding='utf-8')
+        user_attribute_df = pd.read_csv(filepath_or_buffer=user_attribute_file_path,
+                                        sep=',', encoding='utf-8')
+
+        user_trajactory_df.sort_values(by='enTime', ascending=True, inplace=True)
+        user_trajactory_df = user_trajactory_df[['enTollLaneId', 'enTime', 'cardId']]
+
+        # filter out invalid record
+        user_trajactory_df['len_enTollLaneId'] = user_trajactory_df['enTollLaneId'].apply(lambda x: len(x))
+        user_trajactory_df = user_trajactory_df[user_trajactory_df['len_enTollLaneId'] == 21]
+        user_trajactory_df.drop(['len_enTollLaneId'], axis=1, inplace=True)
+
+        # transform enTollLaneId data format
+        user_trajactory_df['enTollLaneId'] = user_trajactory_df['enTollLaneId'].apply(lambda x: x[: 14])
+
+        # transform item ids into frequency descent order and transform user id into continuous space
+        distinct_user_ids = user_trajactory_df['cardId'].unique()
+        distinct_item_ids = user_trajactory_df['enTollLaneId'].value_counts()
+        distinct_item_ids = distinct_item_ids.index
+        user_mapping = {uid: pos for pos, uid in enumerate(distinct_user_ids)}
+        item_mapping = {iid: pos for pos, iid in enumerate(distinct_item_ids)}
+        n_items, n_users = len(item_mapping), len(user_mapping)
+
+        user_trajactory_df['cardId'] = \
+            user_trajactory_df['cardId'].apply(lambda x: user_mapping[x])
+        user_trajactory_df['enTollLaneId'] = \
+            user_trajactory_df['enTollLaneId'].apply(lambda x: item_mapping[x])
+        user_attribute_df['cardId'] = \
+            user_attribute_df['id'].apply(lambda x: user_mapping[x] if x in user_mapping else -1)
+        user_attribute_df.drop(['id'], inplace=True, axis=1)
+
+        user_trajactory = user_trajactory_df.groupby(by=['cardId'])['enTollLaneId'].apply(lambda x: [_ for _ in x])
+        user_attribute_df = user_attribute_df.join(user_trajactory, on='cardId', how='inner')
+
+        return user_attribute_df, n_items, n_users
     except Exception as e:
         raise e
 
@@ -112,11 +136,12 @@ class Training_Data_Batcher():
             self.batch_start_idx = 0
         return ret
 
-    def make_walk_through(self, batchsize=128):
-        ret, batch_start_idx = [], 0
-        while batch_start_idx < self.n_data:
-            ret.append(self.data.iloc[batch_start_idx: batch_start_idx + batchsize])
-            batch_start_idx += batchsize
+    def make_walk_through(self):
+        ret = None
+        while self.batch_start_idx < self.n_data:
+            ret = self.data.iloc[self.batch_start_idx:
+                                 self.batch_start_idx + self.batch_size]
+            self.batch_start_idx += self.batch_size
         return ret
 
 

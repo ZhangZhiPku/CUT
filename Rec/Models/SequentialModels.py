@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import math
 
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 from Rec.Common.Utilites import Training_Data_Batcher, Training_Helper
 
 
@@ -13,7 +14,7 @@ class UPS_Cliassifler():
     Classifier with user profile based on sequential data
     """
 
-    def __init__(self, n_items):
+    def __init__(self, n_items, sequence_length, rank=100):
         self.batcher = None
         self.sess = None
 
@@ -28,8 +29,21 @@ class UPS_Cliassifler():
 
         # build-in properties
         self._built = False
+        self._rank = rank
+        self._sequenth_length = sequence_length
 
-    def build(self, rank, learning_rate=1e-3, seq_length=100, classes=2, n_neg_samplings=64):
+        self.build(rank=self._rank, seq_length=self._sequenth_length)
+
+    def get_sess_or_create(self):
+        if self.sess is None:
+            self.sess = tf.Session()
+            self.sess.run(tf.global_variables_initializer())
+            return self.sess
+        else:
+            return self.sess
+
+    def build(self, rank, learning_rate=1e-3, seq_length=100, n_neg_samplings=64):
+        tf.reset_default_graph()
 
         with tf.name_scope('embeddings'):
             with tf.device('/cpu:0'):
@@ -67,7 +81,6 @@ class UPS_Cliassifler():
 
             user_embeddings = Bidirectional(CuDNNGRU(units=128))(user_trajectory_embeddings)
             self._raw_output = Dense(units=1, activation='sigmoid')(user_embeddings)
-            self._prediction = tf.argmax(self._raw_output, axis=1)
 
         with tf.name_scope('losses'):
             self.pretraining_loss = tf.reduce_mean(tf.nn.nce_loss(
@@ -78,15 +91,16 @@ class UPS_Cliassifler():
                 num_sampled=n_neg_samplings,
                 num_classes=self.n_items
             ))
-            self.finetune_loss = tf.losses.softmax_cross_entropy(onehot_labels=self._user_tags,
-                                                                 logits=self._raw_output)
+            self.finetune_loss = tf.losses.log_loss(labels=self._user_tags,
+                                                    predictions=self._raw_output)
 
         with tf.name_scope('training-step'):
             optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
             self.pretrain_step = optimizer.minimize(self.pretraining_loss)
+            self.finetune_step = optimizer.minimize(self.finetune_loss)
 
-    def pretrain(self, sequential_input, learning_rate=1e-3, iteration=800000, batchsize=512):
-        sentences = pd.Series([trajectory for uid, trajectory in sequential_input])
+    def pretrain(self, sequential_input, iteration=3000, batchsize=512):
+        sentences = sequential_input
         pretrain_couples = []
         for sentence in sentences:
             _couple, _label = skipgrams(sentence, window_size=3,
@@ -94,31 +108,48 @@ class UPS_Cliassifler():
             pretrain_couples.extend(_couple)
         pretrain_dataframe = pd.DataFrame(pretrain_couples, columns=['relative_word', 'target_word'])
 
-        print(pretrain_dataframe)
-
-        self.build(rank=16)
-        self.sess = tf.Session()
-        self.sess.run(tf.global_variables_initializer())
-
+        self.sess = self.get_sess_or_create()
         batcher = Training_Data_Batcher(pretrain_dataframe, batch_size=batchsize)
         training_agent = Training_Helper()
 
         for iteration_step in range(iteration):
             training_batch = batcher.make_batch()
             training_agent.train(
-                self.pretraining_loss, training_step=self.pretraining_loss,
+                self.pretraining_loss, training_step=self.pretrain_step,
                 feed_dict={
                     self._sequential_label_placeholder: np.reshape(training_batch['target_word'].values, [-1, 1]),
                     self._sequential_window_placeholder: training_batch['relative_word']},
                 sess=self.sess
             )
 
-        sentences_lengths = sentences.apply(lambda x: len(x))
-        cut_length = sentences_lengths.quantile(q=0.95)
-        print('sequence cut length has been set as %d' % cut_length)
+    def finetune(self, dataframe, iteration=500, batchsize=512):
+        self.sess = self.get_sess_or_create()
 
-    def finetune(self):
+        batcher = Training_Data_Batcher(dataframe, batch_size=batchsize)
+        training_agent = Training_Helper(verbose_interval=100)
+
+        for iteration_step in range(iteration):
+            training_batch = batcher.make_batch()
+            training_agent.train(
+                self.finetune_loss, training_step=self.finetune_step,
+                feed_dict={
+                    self._user_trajoctry_input: pad_sequences(training_batch['X'], maxlen=self._sequenth_length),
+                    self._user_tags: np.reshape(training_batch['y'].values, [-1, 1])},
+                sess=self.sess
+            )
         pass
 
-    def predict(self, dataframe, batchsize=1024, verbose=1):
-        pass
+    def predict(self, dataframe, batchsize=1024):
+        dataframe = dataframe['X']
+        self.sess = self.get_sess_or_create()
+        batcher = Training_Data_Batcher(dataframe, batch_size=batchsize, reshuffle=False)
+
+        predictions = []
+        for iteration_step in range((len(dataframe)) // batchsize + 1):
+            training_batch = batcher.make_walk_through()
+            prediction = self.sess.run(
+                self._raw_output,
+                feed_dict={self._user_trajoctry_input: pad_sequences(training_batch, maxlen=self._sequenth_length)},
+            )
+            predictions.append(prediction)
+        return np.concatenate(predictions, axis=0).reshape([-1])
