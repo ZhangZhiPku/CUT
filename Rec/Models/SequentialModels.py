@@ -29,13 +29,13 @@ class UPS_Cliassifler():
         # build-in properties
         self._built = False
 
-    def build(self, rank, learning_rate=1e-3, seq_length=100, classes=2, n_neg_samplings=32):
+    def build(self, rank, learning_rate=1e-3, seq_length=100, classes=2, n_neg_samplings=64):
 
         with tf.name_scope('embeddings'):
             with tf.device('/cpu:0'):
                 self._item_embedding_lookup_table = tf.get_variable(
                     name='item-embeddings', shape=[self.n_items, rank],
-                    initializer=tf.initializers.random_uniform(minval=-0.17, maxval=0.17),
+                    initializer=tf.initializers.random_uniform(minval=-1.0, maxval=1.0),
                     trainable=True)
 
         with tf.name_scope('nce-sampling-variables'):
@@ -85,17 +85,18 @@ class UPS_Cliassifler():
             optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate)
             self.pretrain_step = optimizer.minimize(self.pretraining_loss)
 
-
-    def pretrain(self, sequential_input, learning_rate=1e-3, iteration=17000, batchsize=2048):
+    def pretrain(self, sequential_input, learning_rate=1e-3, iteration=800000, batchsize=512):
         sentences = pd.Series([trajectory for uid, trajectory in sequential_input])
         pretrain_couples = []
         for sentence in sentences:
-            _couple, _label = skipgrams(sentence, window_size=8,
+            _couple, _label = skipgrams(sentence, window_size=3,
                                         negative_samples=0, vocabulary_size=self.n_items)
             pretrain_couples.extend(_couple)
         pretrain_dataframe = pd.DataFrame(pretrain_couples, columns=['relative_word', 'target_word'])
 
-        self.build(rank=128)
+        print(pretrain_dataframe)
+
+        self.build(rank=16)
         self.sess = tf.Session()
         self.sess.run(tf.global_variables_initializer())
 
@@ -107,8 +108,8 @@ class UPS_Cliassifler():
             training_agent.train(
                 self.pretraining_loss, training_step=self.pretraining_loss,
                 feed_dict={
-                    self._sequential_label_placeholder: np.reshape(training_batch['relative_word'].values, [-1, 1]),
-                    self._sequential_window_placeholder: training_batch['target_word']},
+                    self._sequential_label_placeholder: np.reshape(training_batch['target_word'].values, [-1, 1]),
+                    self._sequential_window_placeholder: training_batch['relative_word']},
                 sess=self.sess
             )
 

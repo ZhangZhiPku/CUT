@@ -60,7 +60,12 @@ def data_pre_process(data):
 
     debug('Now system is dealing with id mapping')
     distinct_user_ids = processed['uid'].unique()
-    distinct_item_ids = processed['iid'].unique()
+
+    # transform item ids into frequency desent order
+    distinct_item_ids = processed.groupby(['iid']).count()
+    distinct_item_ids = distinct_item_ids.sort_values(['uid'], ascending=False)
+    distinct_item_ids = distinct_item_ids.index
+
     # mapping user id and item id into continuous vector space
     user_mapping = {uid: pos for pos, uid in enumerate(distinct_user_ids)}
     item_mapping = {iid: pos for pos, iid in enumerate(distinct_item_ids)}
