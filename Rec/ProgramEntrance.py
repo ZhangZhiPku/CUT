@@ -29,13 +29,12 @@ def generate_data():
 
 if __name__ == '__main__':
     dataframe, n_items, n_users = generate_data()
-
     # filter out unrelated columns
     dataframe['X'] = dataframe['enTollLaneId']
-    dataframe['y'] = dataframe['user_type'] - 1 # trans {1, 2} into {0, 1}
+    dataframe['y'] = dataframe['user_type']  # -1 if label is {1, 2}
     dataframe = dataframe[['X', 'y']]
 
-    data_spliter = KFold(n_splits=4)
+    data_spliter = KFold(n_splits=3, shuffle=True)
     for kidx, (train_idx, validation_idx) in enumerate(data_spliter.split(dataframe)):
         train_dataframe = dataframe.iloc[train_idx].copy()
         validation_dataframe = dataframe.iloc[validation_idx].copy()
@@ -48,7 +47,9 @@ if __name__ == '__main__':
         model.pretrain(train_dataframe['X'])
         model.finetune(dataframe=train_dataframe)
 
+        print(validation_dataframe['y'])
+
         prediction = model.predict(dataframe=validation_dataframe)
-        print('model training finished at iteration %d, model f1: %.4f' %
+        print('model training finished at iteration %d, model auc score: %.4f' %
               (kidx + 1, roc_auc_score(y_true=validation_dataframe['y'],
                                        y_score=prediction)))
